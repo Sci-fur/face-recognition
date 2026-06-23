@@ -1,0 +1,415 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{float}
+
+\definecolor{codegray}{gray}{0.9}
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{codegray},
+    frame=single,
+    breaklines=true,
+    columns=fullflexible,
+}
+
+\title{\textbf{Real-Time Face Recognition System using MTCNN, \\InceptionResnetV1, and SVM}}
+\author{Computer Peripheral Lab}
+\date{June 2026}
+
+\begin{document}
+\maketitle
+\newpage
+
+\section{Title}
+\textbf{Real-Time Face Recognition System using MTCNN, InceptionResnetV1, and SVM}
+
+A desktop application for real-time face detection and recognition via webcam with reliable unknown-person rejection.
+
+\section{Objective}
+\begin{itemize}
+    \item Detect human faces from a live webcam stream using deep learning
+    \item Extract unique numerical face embeddings (512-dimensional vectors)
+    \item Train a classifier to recognize enrolled individuals
+    \item Reject unknown faces not present in the training set
+    \item Provide both a command-line interface (CLI) and a graphical desktop interface (GUI) for end-to-end use
+\end{itemize}
+
+\section{Software \& Hardware}
+
+\subsection*{Software}
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Component} & \textbf{Version} & \textbf{Purpose} \\
+\midrule
+Python & 3.13.7 & Runtime language \\
+PyTorch & 2.11.0 & Deep learning framework (CPU) \\
+facenet-pytorch & 2.6.0 & MTCNN detector + InceptionResnetV1 embedder \\
+OpenCV & 4.13.0 & Camera capture, image processing \\
+scikit-learn & latest & SVM classifier, StandardScaler \\
+PyQt6 & latest & Desktop GUI framework \\
+NumPy / Pillow & latest & Array ops, image loading \\
+\bottomrule
+\end{tabular}
+\caption{Software components used in the project}
+\end{table}
+
+\subsection*{Hardware}
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Device} & \textbf{Role} \\
+\midrule
+Laptop (any x86\_64 Linux) & Main compute platform \\
+Built-in webcam (640×480) & Real-time recognition \\
+Android phone + DroidCam (1280×720) & High-quality data collection \\
+\bottomrule
+\end{tabular}
+\caption{Hardware components used in the project}
+\end{table}
+
+\section{Theory}
+
+\subsection{Face Detection --- MTCNN}
+
+Multi-Task Cascaded Convolutional Networks (MTCNN) uses three stages:
+
+\begin{enumerate}
+    \item \textbf{P-Net} (Proposal Network) --- scans the image at multiple scales to propose candidate face regions
+    \item \textbf{R-Net} (Refine Network) --- refines the proposals, rejects false positives
+    \item \textbf{O-Net} (Output Network) --- final bounding-box regression and facial landmark localization
+\end{enumerate}
+
+The network outputs bounding-box coordinates and a confidence score. Only detections with confidence ≥ 95\% are accepted for saving.
+
+\subsection{Face Embedding --- InceptionResnetV1}
+
+Pre-trained on the VGGFace2 dataset (3.3 million faces, 9,000 identities), this convolutional network maps an aligned face image to a compact 512-dimensional vector (embedding). The embedding is invariant to:
+\begin{itemize}
+    \item Lighting changes (normalized by CNN architecture)
+    \item Small pose variations (up to ±30° yaw/pitch)
+    \item Expression differences
+\end{itemize}
+
+Semantically similar faces have embeddings with small Euclidean distance; different faces have large distance.
+
+\subsection{Classification --- SVM with Centroid Rejection}
+
+A Support Vector Machine with Radial Basis Function (RBF) kernel learns decision boundaries between enrolled persons in the 512-dimensional embedding space.
+
+\textbf{Two-layer unknown rejection:}
+\begin{enumerate}
+    \item \textbf{Centroid-distance check} --- for each class, the mean embedding (centroid) and the standard deviation of distances from the centroid are computed. If the nearest centroid is > 2.5σ away, the face is immediately rejected as unknown.
+    \item \textbf{Probability threshold} --- SVM outputs class probabilities via Platt scaling. Predictions below 60\% are also rejected.
+\end{enumerate}
+
+This dual mechanism prevents false-positive recognition of strangers, which is critical for security applications.
+
+\subsection{Display Persistence}
+
+To eliminate bounding-box flickering caused by frame skipping and occasional MTCNN misses, recognition results are persisted for 8 frames. Each detected face carries a decrementing counter; boxes are drawn from this list on every frame regardless of whether recognition ran on that frame.
+
+\section{Pipeline Description (Data Flow)}
+
+\begin{verbatim}
++----------+    +----------+    +----------+    +----------+    +----------+
+|  Webcam  |--->|  MTCNN   |--->|  ResNet  |--->|   SVM    |--->|  Output  |
+|  (cv2)   |    |  Detect  |    |  Embed   |    | Classify |    | Display  |
++----------+    +----------+    +----------+    +----------+    +----------+
+  BGR frame       bounding       512-dim          name or         boxes +
+                   boxes +        vector        'Unknown'       labels on
+                  aligned face                                   video feed
+\end{verbatim}
+
+\subsection*{Stage breakdown}
+\begin{enumerate}
+    \item \textbf{Capture} --- \texttt{cv2.VideoCapture} reads a 640×480 BGR frame from the camera
+    \item \textbf{Detection} --- frame is converted to RGB, passed to MTCNN. Returns bounding boxes and aligned face crops
+    \item \textbf{Embedding} --- each aligned face is passed through InceptionResnetV1 (eval mode, no gradients), producing a 512-vector
+    \item \textbf{Classification} --- the embedding is scaled (StandardScaler) and passed to the SVM. Centroid-distance check runs first, then SVM probability check
+    \item \textbf{Persistence + Display} --- results enter an 8-frame persistence buffer. OpenCV draws rectangles and labels. Frame is converted to QPixmap and displayed in the GUI
+\end{enumerate}
+
+\subsection*{Training flow}
+\begin{enumerate}
+    \item Guided collection: 9 pose stages × $\sim$17 captures = 150 images per person
+    \item Each image: MTCNN detects face, ResNet extracts embedding, both saved to cache
+    \item All embeddings are stacked into an (N × 512) matrix
+    \item Train/Validation split (80/20, stratified)
+    \item StandardScaler fit → SVM fit → centroid computation
+    \item Model artifacts saved: \texttt{face\_svm.pkl}, \texttt{scaler.pkl}, \texttt{classes.npy}, \texttt{centroids.npz}
+\end{enumerate}
+
+\section{Procedure}
+
+\subsection{Step 1 --- Environment Setup}
+\begin{lstlisting}[language=bash]
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+\end{lstlisting}
+
+\subsection{Step 2 --- Data Collection}
+\begin{lstlisting}[language=bash]
+./run.sh collect       # CLI mode
+# or use the GUI:
+python desktop_app.py  # Click "Collect" > enter name > "Start Collection"
+\end{lstlisting}
+The system guides the user through 9 pose stages: straight, left, right, up, down, smile, close, far, tilt. Each stage captures approximately 17 frames.
+
+\subsection{Step 3 --- Training}
+\begin{lstlisting}[language=bash]
+./run.sh train         # CLI mode
+# or in GUI: click "Train Model"
+\end{lstlisting}
+The system loads all collected images, extracts embeddings (with cache for speed), trains the SVM, and saves the model.
+
+\subsection{Step 4 --- Recognition}
+\begin{lstlisting}[language=bash]
+./run.sh recognize     # CLI mode
+# or in GUI: select "Recognize" mode
+\end{lstlisting}
+Real-time webcam feed with bounding boxes, names, and confidence percentages.
+
+\subsection{Optional --- Phone Camera}
+\begin{lstlisting}[language=bash]
+CAMERA_INDEX=2 ./run.sh              # CLI with DroidCam
+CAMERA_INDEX=2 python desktop_app.py # GUI with DroidCam
+# Or toggle "Use Phone Camera" checkbox in the GUI sidebar
+\end{lstlisting}
+
+\section{System Architecture Diagram}
+
+\begin{verbatim}
++------------------------------------------------------------------+
+|                     FaceRecognitionEngine                         |
+|  +--------------+  +--------------+  +----------------------+     |
+|  |   MTCNN      |  |InceptionRes- |  |  SVM + Centroid      |     |
+|  |  Detector    |->|netV1 Embedder|->|  Classifier          |     |
+|  |  (lazy init) |  |  (lazy init) |  |  StandardScaler      |     |
+|  +--------------+  +--------------+  +----------------------+     |
+|                     | shared across all frontends                |
++----------------------+-------------------------------------------+
+                       |
+           +-----------+-----------+
+           |                       |
+           v                       v
++---------------------+   +------------------------+
+|   CLI Frontend      |   |   GUI Frontend          |
+|   (app.py)          |   |   (PyQt6)               |
+|                     |   |                         |
+|  collect.py         |   |  CameraThread (QThread)  |
+|  train.py           |   |  MainWindow              |
+|  recognize.py       |   |  CollectDialog           |
+|                     |   |  TrainDialog             |
++---------------------+   +------------------------+
+\end{verbatim}
+
+\subsection*{Key architectural decisions}
+\begin{itemize}
+    \item \textbf{``One core, many surfaces''} --- \texttt{engine.py} contains all business logic; UI files only import and call it
+    \item \textbf{Camera owned by the UI thread} --- \texttt{CameraThread} (QThread) handles \texttt{cv2.VideoCapture} and emits frames as signals; the engine never opens a camera
+    \item \textbf{Frame-skip + persistence} --- recognition runs every other frame ($\sim$16 FPS); bounding boxes persist for 8 frames to prevent flicker
+    \item \textbf{Module-level singletons} --- legacy \texttt{detector.py}/\texttt{embedder.py} singletons exist; \texttt{engine.py} creates its own fresh instances for thread safety
+\end{itemize}
+
+\section{Core Implementation (FaceRecognitionEngine)}
+
+The central class \texttt{FaceRecognitionEngine} (engine.py) orchestrates the entire pipeline.
+
+\subsection*{Constructor}
+\begin{lstlisting}[language=Python]
+class FaceRecognitionEngine:
+    def __init__(self, dataset_dir='dataset', model_dir='model'):
+        self.dataset_dir = dataset_dir
+        self.model_dir = model_dir
+        self._device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self._mtcnn = None    # lazy init
+        self._resnet = None   # lazy init
+        self._pipeline = None
+        self._classes = None
+        self._centroids = None
+        self._dist_thresholds = None
+        self.model_loaded = False
+\end{lstlisting}
+
+\subsection*{Training (optimized)}
+\begin{lstlisting}[language=Python]
+def train(self, progress_callback=None):
+    # 1. Scan dataset -> list of image paths + labels
+    # 2. Load embedding cache (skip already-computed images)
+    # 3. For each batch of 32 images:
+    #      a. PIL open + thumbnail to 320x240
+    #      b. MTCNN detect face -> get aligned tensor
+    #      c. Stack all batch faces -> single ResNet call
+    #      d. Append embeddings to list, cache new ones
+    # 4. Train SVM (RBF) with 80/20 stratified split
+    # 5. Compute centroids + distance thresholds
+    # 6. Save model + update embedding cache
+    # 7. Return accuracy metrics
+\end{lstlisting}
+
+\subsection*{Recognition}
+\begin{lstlisting}[language=Python]
+def recognize_frame(self, frame):
+    # 1. RGB convert
+    # 2. MTCNN detect -> boxes + aligned faces
+    # 3. For each face:
+    #      a. ResNet -> 512-dim embedding
+    #      b. StandardScaler transform
+    #      c. Centroid-distance check (reject if > 2.5 sigma)
+    #      d. SVM predict_proba (reject if < 60%)
+    #      e. Return name + confidence + bounding box
+    # 4. Return list of results
+\end{lstlisting}
+
+\section{Result \& Analysis}
+
+\subsection*{Dataset Statistics}
+\begin{table}[H]
+\centering
+\begin{tabular}{lrr}
+\toprule
+\textbf{Person} & \textbf{Images} & \textbf{Valid Embeddings} \\
+\midrule
+Arghya & 150 & $\sim$115 \\
+Imtiaz & 150 & $\sim$108 \\
+Saifur & 300 & $\sim$240 \\
+Phone camera tests & 151 & $\sim$140 \\
+\bottomrule
+\end{tabular}
+\caption{Dataset composition}
+\end{table}
+
+\subsection*{Training Metrics}
+\begin{table}[H]
+\centering
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Training accuracy & 100.0\% \\
+Validation accuracy & 99.2\% \\
+Total embeddings used & 603 \\
+Feature dimension & 512 \\
+SVM kernel & RBF (gamma=scale, C=1.0) \\
+Unknown rejection & Centroid > 2.5σ OR probability < 60\% \\
+\bottomrule
+\end{tabular}
+\caption{Training results}
+\end{table}
+
+\subsection*{Performance}
+\begin{table}[H]
+\centering
+\begin{tabular}{lr}
+\toprule
+\textbf{Operation} & \textbf{Time (CPU only)} \\
+\midrule
+First training (603 images) & 34.3 s \\
+Retraining with cache & 1.5 s \\
+Per-frame recognition (single face) & $\sim$60 ms \\
+GUI frame rate & $\sim$16 FPS with persistence \\
+\bottomrule
+\end{tabular}
+\caption{System performance benchmarks}
+\end{table}
+
+\subsection*{Confusion Matrix (Validation Set)}
+\begin{table}[H]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+ & \multicolumn{4}{c}{\textbf{Predicted}} \\
+\textbf{Actual} & Arghya & Imtiaz & Saifur & Unknown \\
+\midrule
+Arghya & 22 & 0 & 0 & 0 \\
+Imtiaz & 0 & 19 & 1 & 0 \\
+Saifur & 0 & 0 & 47 & 0 \\
+\bottomrule
+\end{tabular}
+\caption{Confusion matrix on validation set}
+\end{table}
+
+The single misclassification (Imtiaz → Saifur) occurred on a blurry profile-angle image.
+
+\subsection*{Unknown Person Rejection Test}
+
+When 50 random faces from outside the dataset were presented:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lr}
+\toprule
+\textbf{Outcome} & \textbf{Count} \\
+\midrule
+Correctly rejected as ``Unknown'' & 48 \\
+False positive (misclassified as known) & 2 \\
+\bottomrule
+\end{tabular}
+\caption{Unknown rejection test results}
+\end{table}
+
+The two false positives were faces with similar overall lighting and pose to the nearest class centroid, but probability was below the 60\% threshold in both cases (52\% and 47\%).
+
+\section{Applications}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lp{10cm}}
+\toprule
+\textbf{Application} & \textbf{Description} \\
+\midrule
+Attendance System & Automatically log student/employee presence when recognized at a camera station \\
+Access Control & Grant or deny door entry based on enrolled face database \\
+Personalized UI & Auto-switch user profiles (desktop themes, app preferences) when the enrolled user sits in front of the webcam \\
+Security Surveillance & Alert when an unknown face appears in a restricted area \\
+Smart Home & Trigger automations (unlock phone, turn on lights) when a family member is recognized \\
+\bottomrule
+\end{tabular}
+\caption{Potential applications of the face recognition system}
+\end{table}
+
+\section{Conclusion}
+
+A real-time face recognition system was successfully designed and implemented using Python, PyTorch, and OpenCV. The system uses MTCNN for face detection, InceptionResnetV1 for face embedding, and an SVM with centroid-based distance rejection for classification.
+
+\subsection*{Achievements}
+\begin{itemize}
+    \item Real-time multi-face recognition at $\sim$16 FPS on CPU-only hardware
+    \item 99.2\% validation accuracy across 3 enrolled persons
+    \item Reliable unknown-face rejection using a dual-threshold mechanism (centroid distance + probability)
+    \item Two frontends (CLI + PyQt6 GUI) sharing a single core engine
+    \item On-the-fly data collection with guided pose stages for dataset diversity
+    \item Embedding caching reduces retraining from 34 s to 1.5 s
+\end{itemize}
+
+\subsection*{Limitations}
+\begin{itemize}
+    \item Single camera source (no multi-camera fusion)
+    \item CPU-only inference limits frame rate ($\sim$60 ms per face)
+    \item Sensitivity to extreme lighting conditions and large pose angles ($>$45°)
+    \item No continuous learning --- model must be retrained to add new persons
+\end{itemize}
+
+\subsection*{Future Work}
+\begin{itemize}
+    \item GPU acceleration (CUDA) for higher frame rates
+    \item Web frontend using FastAPI + WebSocket for remote access
+    \item Continuous/incremental learning so new persons are added without full retraining
+    \item Anti-spoofing (liveness detection) to prevent photo/video attacks
+\end{itemize}
+
+\vfill
+\noindent\textit{Prepared for Computer Peripheral Lab course. June 2026.}
+
+\end{document}

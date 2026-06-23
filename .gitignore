@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+*.pyc
+dataset/
+model/
+_embeddings.pkl
